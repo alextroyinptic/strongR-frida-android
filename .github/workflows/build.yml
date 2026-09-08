@@ -100,20 +100,19 @@ jobs:
       id: setup-ndk
       uses: nttld/setup-ndk@v1.5.0
       with:
-        ndk-version: r25b
+        ndk-version: r29
     
     - name: Set up Python 3.10
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
-    - name: install dependencies
+    - name: Install dependencies
       run: |
-        sudo apt-get update && DEBIAN_FRONTEND=noninteractive sudo apt-get install build-essential tree ninja-build gcc-multilib g++-multilib lib32stdc++-9-dev flex bison ruby ruby-dev python3-requests python3-setuptools python3-dev python3-pip libc6-dev libc6-dev-i386 xz-utils -y
-        sudo gem install fpm -v 1.11.0 --no-document
+        sudo apt-get update && DEBIAN_FRONTEND=noninteractive sudo apt-get install build-essential tree ninja-build gcc-multilib g++-multilib lib32stdc++-9-dev flex bison ruby ruby-dev python3-requests python3-setuptools python3-dev python3-pip libc6-dev libc6-dev-i386 xz-utils patch -y
         python3 -m pip install lief graphlib-backport
 
-    - name: build frida for Android
+    - name: Build frida for Android
       shell: bash
       run: |
         git config --global user.name "github-actions[bot]"
@@ -121,6 +120,7 @@ jobs:
         git clone https://github.com/AAAA-Project/Patchs.git
         export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
         git clone --depth 1 --branch ${{ needs.check_version.outputs.FRIDA_VERSION }} --recurse-submodules https://github.com/frida/frida
+        
         cd frida
         for path in ../Patchs/strongR-frida/*
         do
@@ -129,80 +129,44 @@ jobs:
           if [ -d "subprojects/$name" ]; then
             echo "Apply patches in $real to frida/subprojects/$name"
             cd subprojects/$name
-            git am ../../../Patchs/strongR-frida/$name/*.patch || true
+            for pfile in ../../../Patchs/strongR-frida/$name/*.patch; do
+              if [ -f "$pfile" ]; then
+                patch -p1 --fuzz=3 -N < "$pfile" || true
+              fi
+            done
             cd ../..
           fi
         done
-        cd ..
-        
+
         ARCHES="android-arm android-arm64 android-x86 android-x86_64"
+        mkdir -p ../dist
         for ARCH in $ARCHES
         do
-          mkdir build-$ARCH
-          cd build-$ARCH
-          ../frida/configure --host=$ARCH
+          ./configure --host=$ARCH
           make
-          cd ..
+          cp subprojects/frida-core/server/frida-server ../dist/frida-server-$ARCH || true
+          cp subprojects/frida-core/inject/frida-inject ../dist/frida-inject-$ARCH || true
+          cp subprojects/frida-core/lib/gadget/frida-gadget.so ../dist/frida-gadget-$ARCH.so || true
+          make clean || true
         done
 
-    - name: Get release details
-      id: checkReleaseVersion
-      uses: actions/github-script@v7
-      with:
-        github-token: ${{secrets.GITHUB_TOKEN}}
-        script: |
-          try {
-            const releaseVersion = '${{ needs.check_version.outputs.FRIDA_VERSION }}'
-            const releaseResponse = await github.rest.repos.getReleaseByTag({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag: releaseVersion
-            })
-            const {
-              data: { id: releaseId, html_url: htmlUrl, upload_url: uploadUrl }
-            } = releaseResponse;
-            core.setOutput('id', releaseId);
-            core.setOutput('html_url', htmlUrl);
-            core.setOutput('upload_url', uploadUrl);
-            core.setOutput('version', releaseVersion);
-          } catch (e) {
-            core.setFailed(e.message);
-          }
-
-    - name: package build result for Android
+    - name: Package build result for Android
       shell: bash
       run: |
-        gzip -9 build-android-arm/subprojects/frida-core/server/frida-server
-        gzip -9 build-android-arm64/subprojects/frida-core/server/frida-server
-        gzip -9 build-android-x86/subprojects/frida-core/server/frida-server
-        gzip -9 build-android-x86_64/subprojects/frida-core/server/frida-server
-        
-        gzip -9 build-android-arm/subprojects/frida-core/inject/frida-inject
-        gzip -9 build-android-arm64/subprojects/frida-core/inject/frida-inject
-        gzip -9 build-android-x86/subprojects/frida-core/inject/frida-inject
-        gzip -9 build-android-x86_64/subprojects/frida-core/inject/frida-inject
-        
-        gzip -9 build-android-arm/subprojects/frida-core/lib/gadget/frida-gadget.so
-        gzip -9 build-android-arm64/subprojects/frida-core/lib/gadget/frida-gadget.so
-        gzip -9 build-android-x86/subprojects/frida-core/lib/gadget/frida-gadget.so
-        gzip -9 build-android-x86_64/subprojects/frida-core/lib/gadget/frida-gadget.so
+        mkdir -p output
+        cd dist
+        for f in *; do
+          if [ -f "$f" ]; then
+            gzip -9 -c "$f" > "../output/$f.gz"
+          fi
+        done
+        cd ..
+        ls -la output/
 
     - name: Upload Release Assets for All Architectures
       uses: softprops/action-gh-release@v2
       with:
         tag_name: "${{ needs.check_version.outputs.FRIDA_VERSION }}"
-        files: |
-          build-android-arm/subprojects/frida-core/server/frida-server.gz
-          build-android-arm64/subprojects/frida-core/server/frida-server.gz
-          build-android-x86/subprojects/frida-core/server/frida-server.gz
-          build-android-x86_64/subprojects/frida-core/server/frida-server.gz
-          build-android-arm/subprojects/frida-core/inject/frida-inject.gz
-          build-android-arm64/subprojects/frida-core/inject/frida-inject.gz
-          build-android-x86/subprojects/frida-core/inject/frida-inject.gz
-          build-android-x86_64/subprojects/frida-core/inject/frida-inject.gz
-          build-android-arm/subprojects/frida-core/lib/gadget/frida-gadget.so.gz
-          build-android-arm64/subprojects/frida-core/lib/gadget/frida-gadget.so.gz
-          build-android-x86/subprojects/frida-core/lib/gadget/frida-gadget.so.gz
-          build-android-x86_64/subprojects/frida-core/lib/gadget/frida-gadget.so.gz
+        files: output/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
