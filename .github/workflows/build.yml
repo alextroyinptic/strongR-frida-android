@@ -120,7 +120,7 @@ jobs:
         git clone https://github.com/AAAA-Project/Patchs.git
         export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
         git clone --depth 1 --branch ${{ needs.check_version.outputs.FRIDA_VERSION }} --recurse-submodules https://github.com/frida/frida
-        
+
         cd frida
         for path in ../Patchs/strongR-frida/*
         do
@@ -138,17 +138,46 @@ jobs:
           fi
         done
 
+        # Remember where the source checkout lives, then step back out to the
+        # workspace root - the rest of the build happens *outside* the source
+        # tree, one directory per arch ("out-of-tree" builds, see frida's own
+        # building docs: https://frida.re/docs/building/#oot).
+        FRIDA_SRC="$(pwd)"
+        cd ..
+
         ARCHES="android-arm android-arm64 android-x86 android-x86_64"
-        mkdir -p ../dist
+        mkdir -p dist
         for ARCH in $ARCHES
         do
-          ./configure --host=$ARCH
-          make
-          cp subprojects/frida-core/server/frida-server ../dist/frida-server-$ARCH || true
-          cp subprojects/frida-core/inject/frida-inject ../dist/frida-inject-$ARCH || true
-          cp subprojects/frida-core/lib/gadget/frida-gadget.so ../dist/frida-gadget-$ARCH.so || true
-          make clean || true
+          echo "::group::Building $ARCH"
+          BUILD_DIR="build-$ARCH"
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR"
+
+          # Each arch gets its own fresh build directory. Frida's configure
+          # script refuses to reconfigure an existing ./build for a different
+          # host - it just prints "Already configured. Wipe ./build to
+          # reconfigure." and exits non-zero. Reusing frida/ (and therefore
+          # frida/build) for every arch is what killed the loop right after
+          # the first arch finished.
+          (
+            cd "$BUILD_DIR"
+            "$FRIDA_SRC/configure" --host="$ARCH"
+            make
+          )
+
+          # Build output lives under the build dir, mirroring the source
+          # tree's layout - not under the source tree itself.
+          cp "$BUILD_DIR/subprojects/frida-core/server/frida-server" "dist/frida-server-$ARCH" || true
+          cp "$BUILD_DIR/subprojects/frida-core/inject/frida-inject" "dist/frida-inject-$ARCH" || true
+          cp "$BUILD_DIR/subprojects/frida-core/lib/gadget/frida-gadget.so" "dist/frida-gadget-$ARCH.so" || true
+
+          rm -rf "$BUILD_DIR"
+          echo "::endgroup::"
         done
+
+        echo "Collected artifacts:"
+        ls -la dist/
 
     - name: Package build result for Android
       shell: bash
